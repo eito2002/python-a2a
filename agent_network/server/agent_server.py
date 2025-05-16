@@ -2,9 +2,10 @@
 Agent server management module.
 """
 
+import asyncio
 import threading
 import time
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Tuple, Union
 
 from ..config import logger, running_agents
 from ..utils import find_free_port
@@ -15,7 +16,7 @@ class AgentServer:
     """
     
     @staticmethod
-    def start_agent(agent_class, name: str):
+    def start_agent(agent_class, name: str) -> Tuple[Any, int]:
         """
         Start an agent server process.
         
@@ -60,6 +61,58 @@ class AgentServer:
         return agent, port
     
     @staticmethod
+    async def start_mcp_agent(agent_class, name: str, mcp_servers: Optional[Dict[str, str]] = None) -> Tuple[Any, int]:
+        """
+        Start an MCP-enabled agent server process.
+        
+        Args:
+            agent_class: The MCP-enabled agent class to instantiate
+            name: The name for the agent
+            mcp_servers: Dictionary mapping server names to URLs
+            
+        Returns:
+            Tuple of (agent instance, server port)
+        """
+        # Find an available port
+        port = find_free_port()
+        
+        # Create the agent instance with MCP servers
+        agent = agent_class(mcp_servers=mcp_servers)
+        
+        # Update the agent card URL with the actual port
+        if hasattr(agent, "agent_card") and hasattr(agent.agent_card, "url"):
+            agent.agent_card.url = f"http://localhost:{port}"
+        
+        # Initialize MCP connections
+        logger.info(f"Initializing MCP connections for {name} agent")
+        await agent.initialize()
+        
+        # Start the server in a separate thread
+        def run_server():
+            try:
+                logger.info(f"Starting {name} MCP agent server on port {port}")
+                # The run method will handle the event loop for us
+                agent.run(host="0.0.0.0", port=port)
+            except Exception as e:
+                logger.error(f"Error in {name} MCP agent server: {e}")
+        
+        server_thread = threading.Thread(target=run_server, daemon=True)
+        server_thread.start()
+        
+        # Wait for a moment to let the server start
+        time.sleep(1)
+        
+        # Store the agent in the running agents registry with MCP flag
+        running_agents[name] = {
+            "instance": agent,
+            "thread": server_thread,
+            "port": port,
+            "is_mcp": True
+        }
+        
+        return agent, port
+    
+    @staticmethod
     def stop_agent(name: str) -> bool:
         """
         Stop a running agent server.
@@ -78,6 +131,21 @@ class AgentServer:
             # Get the agent
             agent_info = running_agents[name]
             agent = agent_info["instance"]
+            
+            # Check if it's an MCP agent
+            is_mcp = agent_info.get("is_mcp", False)
+            
+            # For MCP agents, close connections asynchronously
+            if is_mcp:
+                # Create an event loop for closing MCP connections
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                
+                try:
+                    # Close MCP connections
+                    loop.run_until_complete(agent.close())
+                finally:
+                    loop.close()
             
             # Stop the server
             if hasattr(agent, "server") and agent.server:
@@ -118,8 +186,103 @@ class AgentServer:
             return None
         
         agent_info = running_agents[name]
-        return {
+        info = {
             "name": name,
             "port": agent_info["port"],
-            "endpoint": f"http://localhost:{agent_info['port']}"
-        } 
+            "endpoint": f"http://localhost:{agent_info['port']}",
+            "is_mcp": agent_info.get("is_mcp", False)
+        }
+        
+        # Add MCP-specific information if available
+        if info["is_mcp"]:
+            agent = agent_info["instance"]
+            if hasattr(agent, "mcp_servers"):
+                info["mcp_servers"] = list(agent.mcp_servers.keys())
+            if hasattr(agent, "_tool_capabilities"):
+                info["mcp_tools"] = list(agent._tool_capabilities.keys())
+        
+        return info
+    
+    @staticmethod
+    async def start_mcp_servers(server_configs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        Start MCP server processes.
+        
+        Args:
+            server_configs: List of server configuration dictionaries
+                Each config should have 'module', 'server_var', and 'port' keys
+                
+        Returns:
+            List of dictionaries with server information
+        """
+        started_servers = []
+        
+        for config in server_configs:
+            try:
+                module_name = config["module"]
+                server_var = config["server_var"]
+                port = config["port"]
+                
+                # Import the module
+                module = __import__(module_name, fromlist=[server_var])
+                
+                # Get the server instance
+                server = getattr(module, server_var)
+                
+                # Start the server in a separate process
+                import multiprocessing
+                
+                def run_server(server, port):
+                    try:
+                        logger.info(f"Starting MCP server {server.name} on port {port}")
+                        server.run(host="0.0.0.0", port=port)
+                    except Exception as e:
+                        logger.error(f"Error in MCP server: {e}")
+                
+                process = multiprocessing.Process(
+                    target=run_server,
+                    args=(server, port),
+                    daemon=True
+                )
+                process.start()
+                
+                # Wait for a moment to let the server start
+                time.sleep(1)
+                
+                # Store server information
+                server_info = {
+                    "name": server.name,
+                    "port": port,
+                    "process": process,
+                    "endpoint": f"http://localhost:{port}"
+                }
+                
+                started_servers.append(server_info)
+                logger.info(f"Started MCP server {server.name} on port {port}")
+                
+            except Exception as e:
+                logger.error(f"Failed to start MCP server from {config['module']}: {e}")
+        
+        return started_servers
+    
+    @staticmethod
+    def stop_mcp_servers(server_infos: List[Dict[str, Any]]) -> None:
+        """
+        Stop MCP server processes.
+        
+        Args:
+            server_infos: List of server information dictionaries
+        """
+        for info in server_infos:
+            try:
+                process = info["process"]
+                if process.is_alive():
+                    logger.info(f"Stopping MCP server {info['name']}")
+                    process.terminate()
+                    process.join(timeout=5)
+                    
+                    if process.is_alive():
+                        logger.warning(f"MCP server {info['name']} did not terminate, killing")
+                        process.kill()
+            except Exception as e:
+                logger.error(f"Error stopping MCP server {info['name']}: {e}") 
