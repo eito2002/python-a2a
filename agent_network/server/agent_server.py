@@ -5,10 +5,62 @@ Agent server management module.
 import asyncio
 import threading
 import time
+import multiprocessing
 from typing import Dict, List, Optional, Any, Tuple, Union
 
 from ..config import logger, running_agents
 from ..utils import find_free_port
+
+def run_agent_server(agent, host, port, name):
+    """
+    Run an agent server process.
+    
+    Args:
+        agent: The agent instance to run
+        host: Host address to bind to
+        port: Port to bind to
+        name: Agent name for logging
+    """
+    try:
+        logger.info(f"Starting {name} agent server on port {port}")
+        agent.run(host=host, port=port)
+    except Exception as e:
+        logger.error(f"Error in {name} agent server: {e}")
+
+def run_mcp_agent_server(agent, host, port, name):
+    """
+    Run an MCP agent server process with proper async handling.
+    
+    Args:
+        agent: The MCP agent instance to run
+        host: Host address to bind to
+        port: Port to bind to
+        name: Agent name for logging
+    """
+    try:
+        # 新しいイベントループを作成してセット
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        
+        logger.info(f"Starting {name} MCP agent server on port {port}")
+        agent.run(host=host, port=port)
+    except Exception as e:
+        logger.error(f"Error in {name} MCP agent server: {e}")
+
+def run_mcp_server(server, host, port):
+    """
+    Run an MCP server process.
+    
+    Args:
+        server: The MCP server instance to run
+        host: Host address to bind to
+        port: Port to bind to
+    """
+    try:
+        logger.info(f"Starting MCP server {server.name} on port {port}")
+        server.run(host=host, port=port)
+    except Exception as e:
+        logger.error(f"Error in MCP server: {e}")
 
 class AgentServer:
     """
@@ -38,14 +90,11 @@ class AgentServer:
             agent.agent_card.url = f"http://localhost:{port}"
         
         # Start the server in a separate thread
-        def run_server():
-            try:
-                logger.info(f"Starting {name} agent server on port {port}")
-                agent.run(host="0.0.0.0", port=port)
-            except Exception as e:
-                logger.error(f"Error in {name} agent server: {e}")
-        
-        server_thread = threading.Thread(target=run_server, daemon=True)
+        server_thread = threading.Thread(
+            target=run_agent_server, 
+            args=(agent, "0.0.0.0", port, name), 
+            daemon=True
+        )
         server_thread.start()
         
         # Wait for a moment to let the server start
@@ -88,15 +137,11 @@ class AgentServer:
         await agent.initialize()
         
         # Start the server in a separate thread
-        def run_server():
-            try:
-                logger.info(f"Starting {name} MCP agent server on port {port}")
-                # The run method will handle the event loop for us
-                agent.run(host="0.0.0.0", port=port)
-            except Exception as e:
-                logger.error(f"Error in {name} MCP agent server: {e}")
-        
-        server_thread = threading.Thread(target=run_server, daemon=True)
+        server_thread = threading.Thread(
+            target=run_mcp_agent_server, 
+            args=(agent, "0.0.0.0", port, name), 
+            daemon=True
+        )
         server_thread.start()
         
         # Wait for a moment to let the server start
@@ -230,18 +275,9 @@ class AgentServer:
                 server = getattr(module, server_var)
                 
                 # Start the server in a separate process
-                import multiprocessing
-                
-                def run_server(server, port):
-                    try:
-                        logger.info(f"Starting MCP server {server.name} on port {port}")
-                        server.run(host="0.0.0.0", port=port)
-                    except Exception as e:
-                        logger.error(f"Error in MCP server: {e}")
-                
                 process = multiprocessing.Process(
-                    target=run_server,
-                    args=(server, port),
+                    target=run_mcp_server,
+                    args=(server, "0.0.0.0", port),
                     daemon=True
                 )
                 process.start()

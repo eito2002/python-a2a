@@ -324,8 +324,9 @@ async def start_mcp_environment(args):
 
 def run_mcp_command(args):
     """Run the MCP command by executing the async function."""
-    # 非同期関数を実行するための準備
-    loop = asyncio.get_event_loop()
+    # 新しいイベントループを作成して使用
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
     
     try:
         # start_mcp_environment関数を実行
@@ -371,8 +372,9 @@ def main():
     args = parser.parse_args()
     
     if args.command == "start":
-        # 非同期関数を実行するための準備
-        loop = asyncio.get_event_loop()
+        # 新しいイベントループを作成して使用
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
         try:
             loop.run_until_complete(start_all_agents())
         finally:
