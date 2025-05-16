@@ -215,13 +215,13 @@ MCP対応エージェントを追加するには：
 1. `MCPEnabledAgent`を継承した新しいエージェントクラスを作成
 2. `handle_message_async`と`handle_task_async`メソッドを実装
 3. 必要なMCPサーバーとの連携を設定
-4. `run_mcp_environment.py`の設定に追加する
+4. `cli.py`の設定に追加する
 
 ### 新しいMCPサーバーの追加
 
 1. `FastMCP`を使用して新しいMCPサーバーを作成
 2. ツールとリソースを関数デコレータで定義
-3. `run_mcp_environment.py`の設定に追加する
+3. `cli.py`の設定に追加する
 
 ## 依存関係
 
